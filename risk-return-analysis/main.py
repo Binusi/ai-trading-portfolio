@@ -1,5 +1,5 @@
-from data_fetch import fetch_price_data
-from features import build_feature_dataset, get_single_ticker_df
+from src.data_fetch import fetch_price_data
+from src.features import build_feature_dataset, get_single_ticker_df
 
 # ---------------------------- GET DATA
 
