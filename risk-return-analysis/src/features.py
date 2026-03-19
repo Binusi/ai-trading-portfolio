@@ -141,7 +141,7 @@ def add_features(
     # IMPORTANT:
     # target at date t = return from t to t+1
     # -----------------------------
-    df["target_next_return"] = close.pct_change().shift(-1)
+    df["target_next_return"] = (close.shift(-1) / close) - 1
     df["target_next_direction"] = (df["target_next_return"] > 0).astype("Int64")
 
     return df
