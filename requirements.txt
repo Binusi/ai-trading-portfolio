@@ -38,3 +38,4 @@ urllib3==2.6.3
 wcwidth==0.6.0
 websockets==15.0.1
 yfinance==1.2.0
+scikit-learn
