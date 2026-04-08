@@ -1,12 +1,24 @@
 import numpy as np
 import pandas as pd
 
-from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import (
+    AdaBoostClassifier,
+    AdaBoostRegressor,
+    ExtraTreesClassifier,
+    ExtraTreesRegressor,
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+    StackingClassifier,
+    StackingRegressor,
+)
 from sklearn.linear_model import ElasticNet, LogisticRegression, Ridge
 from sklearn.metrics import accuracy_score, mean_absolute_error, mean_squared_error
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC, SVR
 
 
 FEATURE_COLS = [
@@ -198,6 +210,93 @@ def get_model_registry() -> dict:
                 min_samples_leaf=20,
                 class_weight="balanced_subsample",
                 random_state=42,
+                n_jobs=-1,
+            ),
+        },
+        "svm_regression": {
+            "task_type": "regression",
+            "builder": lambda: Pipeline([
+                ("scaler", StandardScaler()),
+                ("model", SVR(kernel="rbf", C=1.0)),
+            ]),
+        },
+        "svm_classifier": {
+            "task_type": "classification",
+            "builder": lambda: Pipeline([
+                ("scaler", StandardScaler()),
+                ("model", SVC(kernel="rbf", probability=True, class_weight="balanced")),
+            ]),
+        },
+        "extra_trees_regression": {
+            "task_type": "regression",
+            "builder": lambda: ExtraTreesRegressor(
+                n_estimators=400,
+                max_depth=8,
+                min_samples_leaf=20,
+                random_state=42,
+                n_jobs=-1,
+            ),
+        },
+        "extra_trees_classifier": {
+            "task_type": "classification",
+            "builder": lambda: ExtraTreesClassifier(
+                n_estimators=400,
+                max_depth=8,
+                min_samples_leaf=20,
+                class_weight="balanced_subsample",
+                random_state=42,
+                n_jobs=-1,
+            ),
+        },
+        "adaboost_regression": {
+            "task_type": "regression",
+            "builder": lambda: AdaBoostRegressor(
+                n_estimators=200,
+                learning_rate=0.05,
+                random_state=42,
+            ),
+        },
+        "adaboost_classifier": {
+            "task_type": "classification",
+            "builder": lambda: AdaBoostClassifier(
+                n_estimators=200,
+                learning_rate=0.05,
+                random_state=42,
+            ),
+        },
+        "knn_regression": {
+            "task_type": "regression",
+            "builder": lambda: Pipeline([
+                ("scaler", StandardScaler()),
+                ("model", KNeighborsRegressor(n_neighbors=20)),
+            ]),
+        },
+        "knn_classifier": {
+            "task_type": "classification",
+            "builder": lambda: Pipeline([
+                ("scaler", StandardScaler()),
+                ("model", KNeighborsClassifier(n_neighbors=20)),
+            ]),
+        },
+        "stacking_regression": {
+            "task_type": "regression",
+            "builder": lambda: StackingRegressor(
+                estimators=[
+                    ("ridge", Pipeline([("scaler", StandardScaler()), ("model", Ridge(alpha=1.0))])),
+                    ("hgb", HistGradientBoostingRegressor(max_depth=4, max_iter=150, random_state=42)),
+                ],
+                final_estimator=Ridge(alpha=1.0),
+                n_jobs=-1,
+            ),
+        },
+        "stacking_classifier": {
+            "task_type": "classification",
+            "builder": lambda: StackingClassifier(
+                estimators=[
+                    ("lr", Pipeline([("scaler", StandardScaler()), ("model", LogisticRegression(max_iter=5000))])),
+                    ("hgb", HistGradientBoostingClassifier(max_depth=4, max_iter=150, random_state=42)),
+                ],
+                final_estimator=LogisticRegression(max_iter=5000),
                 n_jobs=-1,
             ),
         },
