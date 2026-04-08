@@ -2,15 +2,9 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-# The approach will be dependent on the asset type - so we set a mapping of what type each asset falls under
-ASSET_GROUP_MAP = {
-    "AAPL": "equity",
-    "MSFT": "equity",
-    "NVDA": "equity",
-    "PATH": "equity",
-    "SPY": "equity_index_etf",
-    "TLT": "bond_etf",
-}
+from src.asset_config import get_asset_group_map
+
+ASSET_GROUP_MAP = get_asset_group_map()
 
 def get_single_ticker_df(price_data: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """
