@@ -1,3 +1,5 @@
+import pandas as pd
+
 from src.backtest import build_top_k_backtest
 from src.data_fetch import fetch_price_data
 from src.features import build_feature_dataset, get_single_ticker_df
@@ -14,6 +16,10 @@ from src.model import (
     make_prediction_frame,
     FEATURE_COLS,
 )
+from src.strategy import build_allocation_timeline
+from src.simulation import run_simulation, compute_simulation_metrics
+from src.visualization import generate_all_plots
+from src.utils import format_metrics_table
 
 
 # ---------------------------- CHOOSE ASSETS
@@ -89,6 +95,7 @@ print("\nMISSING FEATURE_COLS FROM FEATURE DATA:")
 print(missing_feature_cols)
 
 results = []
+all_test_predictions = {}
 registry = get_model_registry()
 
 all_target_configs = {}
@@ -203,6 +210,9 @@ for target_name in TARGETS_TO_RUN + CLASSIFIER_TARGETS_TO_RUN:
                 transaction_cost_bps=10.0,
             )
 
+            # Store test predictions for later use in simulation
+            all_test_predictions[(target_name, group_name, model_name)] = test_predictions
+
             result_row = {
                 "target_name": target_name,
                 "group_name": group_name,
@@ -234,3 +244,101 @@ print(results_df)
 
 print("\nTOP 10 BY VALIDATION SHARPE")
 print(results_df.head(10))
+
+
+# ============================================================================
+# PORTFOLIO ALLOCATION & TRADE SIMULATION
+# ============================================================================
+
+print("\n" + "=" * 120)
+print("PORTFOLIO ALLOCATION & TRADE SIMULATION")
+print("=" * 120)
+
+# Select best model by validation Sharpe, preferring all_assets for meaningful
+# cross-asset-class allocation (equity vs bonds vs ETFs)
+all_assets_results = results_df[results_df["group_name"] == "all_assets"]
+if not all_assets_results.empty:
+    best_row = all_assets_results.iloc[0]
+else:
+    best_row = results_df.iloc[0]
+best_target = best_row["target_name"]
+best_group = best_row["group_name"]
+best_model = best_row["model_name"]
+
+print(f"\nBest model: {best_model}")
+print(f"Target: {best_target}")
+print(f"Asset group: {best_group}")
+print(f"Validation Sharpe: {best_row.get('val_backtest_sharpe', 'N/A')}")
+
+# Get the stored test predictions for the best model
+best_key = (best_target, best_group, best_model)
+best_test_predictions = all_test_predictions[best_key]
+
+# Get rebalance frequency from target config
+rebalance_n = all_target_configs[best_target]["rebalance_every_n_days"]
+
+# Build allocation timeline
+print("\nBuilding portfolio allocation timeline...")
+allocation = build_allocation_timeline(
+    prediction_df=best_test_predictions,
+    feature_df=feature_df,
+    rebalance_every_n_days=rebalance_n,
+)
+
+print(f"Allocation timeline: {len(allocation)} entries across {allocation['Date'].nunique()} rebalance dates")
+print("\nSample allocation (first rebalance date):")
+first_date = allocation["Date"].min()
+print(allocation[allocation["Date"] == first_date][["Ticker", "AssetGroup", "group_weight", "ticker_weight"]])
+
+# Run trade simulation
+print("\nRunning trade simulation ($1,000 initial capital, 2024-01-01 to 2025-12-31)...")
+daily_log, trade_log = run_simulation(
+    allocation_timeline=allocation,
+    price_data=data,
+    tickers=model_tickers,
+    start_date="2024-01-01",
+    end_date="2025-12-31",
+    initial_capital=1000.0,
+    rebalance_every_n_days=rebalance_n,
+    transaction_cost_bps=10.0,
+)
+
+# Compute and print metrics
+sim_metrics = compute_simulation_metrics(daily_log, initial_capital=1000.0)
+if not trade_log.empty:
+    sim_metrics["total_trades"] = len(trade_log)
+    sim_metrics["total_transaction_costs"] = float(trade_log["transaction_cost"].sum())
+print("\n" + format_metrics_table(sim_metrics))
+
+# Print trade summary
+if not trade_log.empty:
+    print(f"\nTotal trades executed: {len(trade_log)}")
+    print(f"Total transaction costs: ${trade_log['transaction_cost'].sum():.2f}")
+    print("\nTrade log sample (first 20):")
+    print(trade_log.head(20).to_string(index=False))
+
+# Generate benchmark for comparison (SPY buy & hold)
+benchmark_prices = None
+try:
+    spy_close = data["Close"]["SPY"]
+    sim_dates = pd.to_datetime(daily_log["Date"])
+    benchmark_prices = spy_close.loc[
+        (spy_close.index >= sim_dates.min()) & (spy_close.index <= sim_dates.max())
+    ]
+except (KeyError, TypeError):
+    pass
+
+# Generate all plots
+print("\nGenerating visualizations...")
+output_dir = "output"
+saved_plots = generate_all_plots(
+    daily_log=daily_log,
+    trade_log=trade_log,
+    tickers=model_tickers,
+    benchmark_prices=benchmark_prices,
+    initial_capital=1000.0,
+    output_dir=output_dir,
+)
+print(f"Saved {len(saved_plots)} plots to {output_dir}/:")
+for p in saved_plots:
+    print(f"  - {p}")
