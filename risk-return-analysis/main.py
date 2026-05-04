@@ -16,16 +16,35 @@ from src.model import (
     make_prediction_frame,
     FEATURE_COLS,
 )
-from src.strategy import build_allocation_timeline
+from src.profile_strategy import (
+    build_profile_allocation_timeline,
+    get_quarterly_rebalance_dates,
+)
+from src.profiles import (
+    DEFAULT_EQUITY_UNIVERSE,
+    INDEX_PROXIES,
+    RISK_PROFILES,
+    get_profile,
+    get_required_tickers,
+)
+from src.export_app_data import export_app_data
 from src.simulation import run_simulation, compute_simulation_metrics
+from src.utils import format_metrics_table, get_trading_days
 from src.visualization import generate_all_plots
-from src.utils import format_metrics_table
 
 
 # ---------------------------- CHOOSE ASSETS
 
-tickers = ["AAPL", "MSFT", "SPY", "^GSPC", "TLT", "NVDA", "PATH"]
-model_tickers = ["AAPL", "MSFT", "SPY", "TLT", "NVDA"]  # leave PATH out of first serious benchmark
+# Tickers for ML training (individual stocks we want to tilt across)
+model_tickers = ["AAPL", "MSFT", "SPY", "TLT", "NVDA"]
+
+# Equity sleeve for the profile system (subset of model_tickers)
+equity_universe = list(DEFAULT_EQUITY_UNIVERSE)
+
+# Full fetch list: ML training tickers + index proxies needed by profiles
+# (GLD, EFA, etc. are held passively as index proxies — no ML on them)
+simulation_tickers = get_required_tickers(equity_universe)
+tickers = sorted(set(["^GSPC"] + model_tickers + simulation_tickers))
 
 TARGETS_TO_RUN = [
     "target_5d_risk_adj_return",
@@ -247,98 +266,193 @@ print(results_df.head(10))
 
 
 # ============================================================================
-# PORTFOLIO ALLOCATION & TRADE SIMULATION
+# PROFILE-BASED PORTFOLIO SIMULATIONS
 # ============================================================================
+# We run six simulations: each of {Conservative, Balanced, Aggressive} with
+# and without the AI tilt. The asset-class targets are profile-defined (the
+# honest, transparent part); the tilt only adjusts individual equity-name
+# weights within the equity sleeve, capped at ±5%.
 
 print("\n" + "=" * 120)
-print("PORTFOLIO ALLOCATION & TRADE SIMULATION")
+print("PROFILE-BASED PORTFOLIO SIMULATIONS")
 print("=" * 120)
 
-# Select best model by validation Sharpe, preferring all_assets for meaningful
-# cross-asset-class allocation (equity vs bonds vs ETFs)
+# Select best ML model by validation Sharpe (preferring the all-assets cohort
+# so we get equity-name signals from a model that saw the broader universe).
 all_assets_results = results_df[results_df["group_name"] == "all_assets"]
-if not all_assets_results.empty:
-    best_row = all_assets_results.iloc[0]
-else:
-    best_row = results_df.iloc[0]
+best_row = (all_assets_results if not all_assets_results.empty else results_df).iloc[0]
 best_target = best_row["target_name"]
 best_group = best_row["group_name"]
 best_model = best_row["model_name"]
 
-print(f"\nBest model: {best_model}")
-print(f"Target: {best_target}")
-print(f"Asset group: {best_group}")
-print(f"Validation Sharpe: {best_row.get('val_backtest_sharpe', 'N/A')}")
+print(f"\nML model used for AI tilt signal:")
+print(f"  Model: {best_model}")
+print(f"  Target: {best_target}")
+print(f"  Asset group: {best_group}")
+print(f"  Validation Sharpe: {best_row.get('val_backtest_sharpe', 'N/A')}")
 
-# Get the stored test predictions for the best model
-best_key = (best_target, best_group, best_model)
-best_test_predictions = all_test_predictions[best_key]
+best_test_predictions = all_test_predictions[(best_target, best_group, best_model)]
 
-# Get rebalance frequency from target config
-rebalance_n = all_target_configs[best_target]["rebalance_every_n_days"]
+SIM_START = "2024-01-01"
+SIM_END = "2025-12-31"
+INITIAL_CAPITAL = 1000.0
+TILT_CAP = 0.05
 
-# Build allocation timeline
-print("\nBuilding portfolio allocation timeline...")
-allocation = build_allocation_timeline(
-    prediction_df=best_test_predictions,
-    feature_df=feature_df,
-    rebalance_every_n_days=rebalance_n,
-)
+trading_days = get_trading_days(SIM_START, SIM_END, data)
+quarterly_dates = get_quarterly_rebalance_dates(trading_days)
+print(f"\nSimulation window: {SIM_START} to {SIM_END}")
+print(f"Quarterly rebalance dates: {len(quarterly_dates)}")
 
-print(f"Allocation timeline: {len(allocation)} entries across {allocation['Date'].nunique()} rebalance dates")
-print("\nSample allocation (first rebalance date):")
-first_date = allocation["Date"].min()
-print(allocation[allocation["Date"] == first_date][["Ticker", "AssetGroup", "group_weight", "ticker_weight"]])
+profile_results: dict[tuple[str, bool], dict] = {}
 
-# Run trade simulation
-print("\nRunning trade simulation ($1,000 initial capital, 2024-01-01 to 2025-12-31)...")
-daily_log, trade_log = run_simulation(
-    allocation_timeline=allocation,
-    price_data=data,
-    tickers=model_tickers,
-    start_date="2024-01-01",
-    end_date="2025-12-31",
-    initial_capital=1000.0,
-    rebalance_every_n_days=rebalance_n,
-    transaction_cost_bps=10.0,
-)
+for profile_key in ["conservative", "balanced", "aggressive"]:
+    profile = get_profile(profile_key)
+    for use_tilt in [False, True]:
+        label = f"{profile.name} ({'tilt' if use_tilt else 'no tilt'})"
+        print(f"\n--- Running {label} ---")
 
-# Compute and print metrics
-sim_metrics = compute_simulation_metrics(daily_log, initial_capital=1000.0)
-if not trade_log.empty:
-    sim_metrics["total_trades"] = len(trade_log)
-    sim_metrics["total_transaction_costs"] = float(trade_log["transaction_cost"].sum())
-print("\n" + format_metrics_table(sim_metrics))
+        allocation, rationale_log = build_profile_allocation_timeline(
+            profile=profile,
+            trading_days=trading_days,
+            equity_tickers=equity_universe,
+            prediction_df=best_test_predictions if use_tilt else None,
+            tilt_cap=TILT_CAP,
+            use_tilt=use_tilt,
+        )
 
-# Print trade summary
-if not trade_log.empty:
-    print(f"\nTotal trades executed: {len(trade_log)}")
-    print(f"Total transaction costs: ${trade_log['transaction_cost'].sum():.2f}")
-    print("\nTrade log sample (first 20):")
-    print(trade_log.head(20).to_string(index=False))
+        daily_log, trade_log = run_simulation(
+            allocation_timeline=allocation,
+            price_data=data,
+            tickers=simulation_tickers,
+            start_date=SIM_START,
+            end_date=SIM_END,
+            initial_capital=INITIAL_CAPITAL,
+            transaction_cost_bps=10.0,
+            rebalance_dates=quarterly_dates,
+        )
 
-# Generate benchmark for comparison (SPY buy & hold)
+        metrics = compute_simulation_metrics(daily_log, initial_capital=INITIAL_CAPITAL)
+        if not trade_log.empty:
+            metrics["total_trades"] = len(trade_log)
+            metrics["total_transaction_costs"] = float(trade_log["transaction_cost"].sum())
+
+        profile_results[(profile_key, use_tilt)] = {
+            "profile": profile,
+            "use_tilt": use_tilt,
+            "allocation": allocation,
+            "daily_log": daily_log,
+            "trade_log": trade_log,
+            "rationale_log": rationale_log,
+            "metrics": metrics,
+        }
+
+        print(f"  Final value: ${metrics['final_portfolio_value']:.2f}  "
+              f"Total return: {metrics['total_return']:.2%}  "
+              f"Sharpe: {metrics.get('sharpe_ratio', float('nan')):.2f}  "
+              f"Max DD: {metrics['max_drawdown']:.2%}  "
+              f"Trades: {metrics.get('total_trades', 0)}")
+
+# ----------------------------- Summary comparison
+
+print("\n" + "=" * 120)
+print("PROFILE COMPARISON SUMMARY")
+print("=" * 120)
+print(f"\nAll figures based on ${INITIAL_CAPITAL:.0f} initial capital, "
+      f"{SIM_START} → {SIM_END}, quarterly rebalancing.\n")
+
+header = f"{'Profile':<14s} {'Tilt':<6s} {'Final $':>10s} {'Total':>9s} {'Annual':>9s} {'Sharpe':>7s} {'Max DD':>8s} {'Trades':>7s}"
+print(header)
+print("-" * len(header))
+for (profile_key, use_tilt), r in profile_results.items():
+    m = r["metrics"]
+    print(
+        f"{r['profile'].name:<14s} "
+        f"{'AI' if use_tilt else 'none':<6s} "
+        f"${m['final_portfolio_value']:>9.2f} "
+        f"{m['total_return']:>8.2%} "
+        f"{m['annualized_return']:>8.2%} "
+        f"{m.get('sharpe_ratio', float('nan')):>7.2f} "
+        f"{m['max_drawdown']:>7.2%} "
+        f"{m.get('total_trades', 0):>7d}"
+    )
+
+# ----------------------------- Sample rationales
+
+print("\n" + "=" * 120)
+print("SAMPLE RATIONALES (Balanced profile + AI tilt)")
+print("=" * 120)
+sample = profile_results[("balanced", True)]["rationale_log"]
+for entry in sample[:3]:
+    print(f"\n[{entry['date'].date()}] {entry['rationale_text']}")
+
+# ----------------------------- Plots for the default profile
+
+print("\n" + "=" * 120)
+print("GENERATING PLOTS (Balanced + AI tilt)")
+print("=" * 120)
+
+default_run = profile_results[("balanced", True)]
 benchmark_prices = None
 try:
     spy_close = data["Close"]["SPY"]
-    sim_dates = pd.to_datetime(daily_log["Date"])
+    sim_dates = pd.to_datetime(default_run["daily_log"]["Date"])
     benchmark_prices = spy_close.loc[
         (spy_close.index >= sim_dates.min()) & (spy_close.index <= sim_dates.max())
     ]
 except (KeyError, TypeError):
     pass
 
-# Generate all plots
-print("\nGenerating visualizations...")
 output_dir = "output"
 saved_plots = generate_all_plots(
-    daily_log=daily_log,
-    trade_log=trade_log,
-    tickers=model_tickers,
+    daily_log=default_run["daily_log"],
+    trade_log=default_run["trade_log"],
+    tickers=simulation_tickers,
     benchmark_prices=benchmark_prices,
-    initial_capital=1000.0,
+    initial_capital=INITIAL_CAPITAL,
     output_dir=output_dir,
 )
-print(f"Saved {len(saved_plots)} plots to {output_dir}/:")
+print(f"\nSaved {len(saved_plots)} plots to {output_dir}/:")
 for p in saved_plots:
     print(f"  - {p}")
+
+# ----------------------------- Export JSON for the Expo app
+
+print("\n" + "=" * 120)
+print("EXPORTING APP DATA")
+print("=" * 120)
+
+actual_start = pd.to_datetime(default_run["daily_log"]["Date"]).min()
+actual_end = pd.to_datetime(default_run["daily_log"]["Date"]).max()
+
+simulation_config = {
+    "start_date": actual_start.strftime("%Y-%m-%d"),
+    "end_date": actual_end.strftime("%Y-%m-%d"),
+    "initial_capital": INITIAL_CAPITAL,
+    "transaction_cost_bps": 10.0,
+    "rebalance_cadence": "quarterly",
+    "tilt_cap_pct": TILT_CAP * 100.0,
+    "equity_universe": equity_universe,
+    "simulation_tickers": simulation_tickers,
+}
+ml_model_info = {
+    "model_name": best_model,
+    "target": best_target,
+    "asset_group": best_group,
+    "validation_sharpe": float(best_row.get("val_backtest_sharpe", float("nan")))
+        if best_row.get("val_backtest_sharpe") is not None
+        else None,
+}
+
+app_data_dir = "../app/assets/data"
+written_files = export_app_data(
+    profile_results=profile_results,
+    price_data=data,
+    ml_model_info=ml_model_info,
+    simulation_config=simulation_config,
+    output_dir=app_data_dir,
+    default_profile_key="balanced",
+    default_use_tilt=False,
+)
+print(f"\nWrote {len(written_files)} JSON files to {app_data_dir}:")
+for p in written_files:
+    print(f"  - {p.name}  ({p.stat().st_size / 1024:.1f} KB)")

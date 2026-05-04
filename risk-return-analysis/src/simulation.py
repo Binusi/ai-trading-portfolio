@@ -169,13 +169,20 @@ def run_simulation(
     initial_capital: float = 1000.0,
     rebalance_every_n_days: int = 5,
     transaction_cost_bps: float = 10.0,
+    rebalance_dates: Optional[list[pd.Timestamp]] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run dollar-based trade simulation.
+
+    If `rebalance_dates` is provided, it overrides `rebalance_every_n_days` —
+    useful for irregular cadences like first-trading-day-of-quarter.
 
     Returns (daily_log_df, trade_log_df).
     """
     trading_days = get_trading_days(start_date, end_date, price_data)
-    rebalance_dates_set = set(get_rebalance_dates(trading_days, rebalance_every_n_days))
+    if rebalance_dates is not None:
+        rebalance_dates_set = {pd.Timestamp(d) for d in rebalance_dates}
+    else:
+        rebalance_dates_set = set(get_rebalance_dates(trading_days, rebalance_every_n_days))
 
     # Build allocation lookup: date -> {ticker: weight}
     alloc = allocation_timeline.copy()
@@ -232,12 +239,14 @@ def run_simulation(
         for ticker in tickers:
             row[f"{ticker}_weight"] = weights.get(ticker, 0.0)
 
-        # Record per-group weights
+        # Record per-group weights using the asset classes that actually appear
+        # in ASSET_GROUP_MAP (us_equity, bond_etf, equity_index_etf,
+        # commodity_etf, international_etf, ...).
         group_weights: dict[str, float] = {}
         for ticker, w in weights.items():
             group = ASSET_GROUP_MAP.get(ticker, "other")
             group_weights[group] = group_weights.get(group, 0.0) + w
-        for group in ["equity", "bond_etf", "equity_index_etf"]:
+        for group in sorted(set(ASSET_GROUP_MAP.values())):
             row[f"{group}_weight"] = group_weights.get(group, 0.0)
 
         daily_rows.append(row)
@@ -298,16 +307,20 @@ def compute_simulation_metrics(
         "worst_day_return": float(returns.min()),
     }
 
-    # Group weight averages
-    for group in ["equity", "bond_etf", "equity_index_etf"]:
-        col = f"{group}_weight"
-        if col in daily_log.columns:
-            key = f"avg_{group.replace('_etf', '').replace('equity_index', 'etf')}_weight"
-            if group == "equity":
-                metrics["avg_equity_weight"] = float(daily_log[col].mean())
-            elif group == "bond_etf":
-                metrics["avg_bond_weight"] = float(daily_log[col].mean())
-            elif group == "equity_index_etf":
-                metrics["avg_etf_weight"] = float(daily_log[col].mean())
+    # Group weight averages — emit one entry per asset class found in the daily log
+    metrics["avg_asset_class_weights"] = {}
+    for col in daily_log.columns:
+        if col.endswith("_weight") and col.replace("_weight", "") in set(ASSET_GROUP_MAP.values()):
+            asset_class = col.replace("_weight", "")
+            metrics["avg_asset_class_weights"][asset_class] = float(daily_log[col].mean())
+
+    # Backwards-compatible aliases used by the existing format_metrics_table()
+    avg = metrics["avg_asset_class_weights"]
+    if "us_equity" in avg:
+        metrics["avg_equity_weight"] = avg["us_equity"]
+    if "bond_etf" in avg:
+        metrics["avg_bond_weight"] = avg["bond_etf"]
+    if "equity_index_etf" in avg:
+        metrics["avg_etf_weight"] = avg["equity_index_etf"]
 
     return metrics

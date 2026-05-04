@@ -1,146 +1,184 @@
-# AI Trading Portfolio - Risk & Return Analysis
+# risk-return-analysis
 
-ML-driven portfolio allocation and trade simulation across multiple asset classes.
+Python research pipeline that trains ML models, simulates three risk-profile
+portfolios with an optional AI tilt, and exports the results as JSON for the
+Expo app in `../app/`.
 
-## Overview
+## How it fits together
 
-This project uses machine learning to predict asset returns and directions, then uses those predictions to:
-
-1. **Dynamically allocate** across asset classes (equities, bonds, ETFs) over time
-2. **Simulate trading** with a $1,000 starting portfolio, tracking daily P&L through end of 2025
-
-### Assets Analyzed
-
-| Ticker | Asset Class | Description |
-|--------|------------|-------------|
-| AAPL | Equity | Apple Inc. |
-| MSFT | Equity | Microsoft Corp. |
-| NVDA | Equity | NVIDIA Corp. |
-| SPY | Equity Index ETF | S&P 500 ETF |
-| TLT | Bond ETF | 20+ Year Treasury Bond ETF |
-
-## How to Run
-
-### Prerequisites
-
-```bash
-pip install pandas numpy scikit-learn yfinance matplotlib
+```
+data fetch (yfinance)
+   ↓
+feature engineering (54+ features per asset)
+   ↓
+ML model training & evaluation  ┐
+                                ├── select best model by validation Sharpe
+ML predictions on the test set  ┘
+   ↓
+6 simulations:
+  {Conservative, Balanced, Aggressive} × {no AI tilt, AI tilt}
+   ↓
+JSON export → ../app/assets/data/
 ```
 
-### Run the full pipeline
+## How to run
 
 ```bash
-cd risk-return-analysis
+pip install -r ../requirements.txt
 python main.py
 ```
 
-This will:
-1. Fetch historical price data (2015-2026) from Yahoo Finance
-2. Engineer 54+ technical/statistical features per asset
-3. Train 7 ML models across multiple targets (5-day, 10-day returns and directions)
-4. Evaluate models on validation (2022-2023) and test (2024+) sets
-5. Select the best model by validation Sharpe ratio
-6. Build a dynamic portfolio allocation timeline
-7. Run a $1,000 trade simulation (2024-01-01 to 2025-12-31)
-8. Generate performance charts in `output/`
+This is the single entry point. It runs everything end-to-end and takes
+roughly 5–10 minutes (most of that is ML training across multiple targets
+and model types). At the end you get:
 
-Runtime: approximately 5-10 minutes depending on network speed and hardware.
+- A printed comparison table for all 6 profile/tilt combos
+- Sample rationale text for the Balanced + AI tilt run
+- PNG plots in `output/` (asset-class weights, portfolio value, drawdown, etc.)
+- JSON files in `../app/assets/data/` that the Expo app consumes
 
-## Project Structure
+If you only want to verify the strategy module without retraining everything:
+
+```bash
+python test_profile_strategy.py    # tilt math, quarterly dates, rationale text
+python test_export_app_data.py     # JSON shape and content (uses synthetic data)
+```
+
+## Risk profiles
+
+Defined in [`src/profiles.py`](src/profiles.py). Each profile is a fixed
+cross-asset target that sums to 1.0. The simulator rebalances back to these
+targets at the start of every calendar quarter.
+
+| Asset class           | Conservative | Balanced | Aggressive |
+|-----------------------|-------------:|---------:|-----------:|
+| US individual stocks  | 20%          | 45%      | 65%        |
+| Long-term Treasuries  | 60%          | 30%      | 10%        |
+| S&P 500 ETF           | 10%          | 15%      | 15%        |
+| Gold                  | 5%           | 5%       | 5%         |
+| International stocks  | 5%           | 5%       | 5%         |
+
+The non-equity sleeves are held via single ETF proxies (TLT, SPY, GLD, EFA).
+The US-equity sleeve is distributed across a fixed list of individual names
+(currently `AAPL`, `MSFT`, `NVDA`).
+
+## AI tilt
+
+The optional tilt is the *only* place the ML model influences the portfolio.
+It applies inside the equity sleeve and follows three rules:
+
+1. **Capped**: each name's weight changes by at most ±5% in absolute terms.
+2. **Zero-sum**: tilts on different names cancel, so the total equity sleeve
+   weight stays exactly at the profile target. Cross-asset risk does not
+   change.
+3. **Inspectable**: each rebalance produces a human-readable rationale that
+   names which tickers were over/underweighted, by how much, and what their
+   ML scores were.
+
+Asset-class targets (the actual driver of risk and return) are **never**
+adjusted by the model. The honest framing: the profile does the heavy
+lifting; the tilt is a small, transparent experiment.
+
+## Pipeline stages
+
+### Stage 1 — ML training (`src/model.py`, `main.py`)
+
+Trains 7 models (Ridge / ElasticNet / HistGradientBoosting / RandomForest
+regressors plus Logistic / HistGradientBoosting / RandomForest classifiers)
+across multiple targets (5d return, 10d return, 5d risk-adjusted return,
+cross-sectional 5d return, plus the directional classifier variants).
+
+Train / val / test splits:
+- Train: 2015 → 2021-12-31
+- Val:   2022 → 2023-12-31
+- Test:  2024 → end of available data
+
+The pipeline picks the best (target, model) combination by **validation**
+Sharpe — using the test set's Sharpe to pick would be selection bias.
+
+### Stage 2 — Profile-based simulation (`src/profile_strategy.py`, `src/simulation.py`)
+
+For each `(profile, use_tilt)` pair:
+1. Build a quarterly rebalance timeline (`get_quarterly_rebalance_dates`)
+2. At each rebalance date, look up the latest available ML scores; compute
+   the equity sleeve tilts (`compute_equity_tilts`); produce target ticker
+   weights and a rationale string
+3. Run the dollar-based simulator (`run_simulation`) with explicit
+   quarterly rebalance dates, fractional shares, 10 bps transaction cost
+4. Compute metrics (Sharpe, Sortino, max drawdown, win rate, etc.)
+
+### Stage 3 — JSON export (`src/export_app_data.py`)
+
+Writes 7 files to `../app/assets/data/`:
+
+| File                       | Contents |
+|----------------------------|----------|
+| `summary.json`             | profile metadata, 6-row comparison, SPY benchmark series, ML model info, default view, disclaimer |
+| `<profile>_<tilt>.json`    | full daily series + per-rebalance event with rationale, tilts, trades, allocation snapshot |
+
+All values use a $1,000 starting-capital base. The app scales linearly to
+the user's selected capital at display time.
+
+## Project structure
 
 ```
 risk-return-analysis/
-  main.py                 # Entry point - runs full pipeline
+  main.py                     entry point — runs the full pipeline
+  test_profile_strategy.py    smoke test for tilt math + rationale
+  test_export_app_data.py     smoke test for JSON export shape
+
   src/
-    data_fetch.py         # Yahoo Finance data retrieval
-    features.py           # Feature engineering (54+ features)
-    model.py              # ML models, training, evaluation
-    backtest.py           # Return-based backtesting
-    strategy.py           # Portfolio allocation logic
-    simulation.py         # Dollar-based trade simulation
-    visualization.py      # Chart generation
-    utils.py              # Shared helpers
-  output/                 # Generated charts (created on run)
+    asset_config.py           ticker universe definitions
+    backtest.py               return-based backtesting
+    data_fetch.py             yfinance wrapper
+    export_app_data.py        JSON output for the app
+    features.py               54+ technical / statistical features
+    model.py                  ML training, model registry, eval
+    profile_strategy.py       quarterly allocation + AI tilt + rationale
+    profiles.py               Conservative / Balanced / Aggressive
+    simulation.py             dollar-based trade simulator
+    strategy.py               legacy score-weighted allocation (unused by main flow)
+    utils.py                  shared helpers
+    visualization.py          matplotlib plots → output/
+
+  output/                     generated PNGs (created on run)
 ```
 
-## Pipeline Stages
+## Extending
 
-### Stage 1: ML Model Training & Evaluation
+### Adding equities to the tilt universe
 
-Trains 7 models (Ridge, ElasticNet, HistGradientBoosting, RandomForest for regression; Logistic, HistGradientBoosting, RandomForest for classification) on multiple targets:
+1. Add the ticker to `model_tickers` in [`main.py`](main.py)
+2. Add the ticker to `DEFAULT_EQUITY_UNIVERSE` in [`src/profiles.py`](src/profiles.py)
+3. Re-run `python main.py`
 
-- **Regression targets**: 5-day return, 10-day return, 5-day risk-adjusted return, cross-sectional 5-day return
-- **Classification targets**: 5-day direction, 10-day direction, cross-sectional 5-day direction
+### Adjusting profile allocations
 
-**Output**: Model comparison table ranked by validation Sharpe ratio.
+Edit the `targets` dict for the profile in [`src/profiles.py`](src/profiles.py).
+The constructor enforces that targets sum to 1.0. Rerun the pipeline.
 
-### Stage 2: Portfolio Allocation
+### Changing the rebalance cadence
 
-Uses the best model's predictions to determine asset class weights over time:
+`get_quarterly_rebalance_dates()` in `src/profile_strategy.py` is currently
+hard-coded to "first trading day of each calendar quarter". Replace it with
+a different selection (monthly, semi-annual, etc.) and the rest of the
+pipeline picks it up automatically — `run_simulation` accepts an explicit
+`rebalance_dates` list.
 
-1. Aggregate prediction scores by asset group (equity, bond, ETF index)
-2. Apply softmax to convert scores to raw weights
-3. Scale by inverse volatility (lower-volatility groups get more weight)
-4. Enforce min/max constraints (5% floor, 80% ceiling per group)
-5. Distribute group weights to individual tickers proportional to their scores
+### Tuning the tilt cap
 
-**Rebalance frequency** is tied to the prediction horizon (5 or 10 trading days), matching the model's forward-looking window.
+Pass `tilt_cap=0.03` (or any value) to `build_profile_allocation_timeline`
+in `main.py`. The default is `TILT_CAP = 0.05` (5%).
 
-### Stage 3: Trade Simulation
+## Notes on honesty
 
-Simulates daily portfolio management with:
-
-- **$1,000 initial capital**
-- **Fractional shares** (necessary given small capital and high stock prices)
-- **Transaction costs**: 10 basis points per trade
-- **Rebalancing**: Every N days (matching prediction horizon), positions drift between rebalances
-- **Period**: 2024-01-01 to 2025-12-31 (test set - model never trained on this data)
-
-## Interpreting Results
-
-### Console Output
-
-- **Model Comparison Table**: All model/target combinations ranked by validation Sharpe. Higher Sharpe = better risk-adjusted returns.
-- **Simulation Metrics**:
-  - **Total Return**: Overall gain/loss percentage
-  - **Annualized Return**: Return normalized to annual rate
-  - **Sharpe Ratio**: Risk-adjusted return (>1 is good, >2 is excellent)
-  - **Sortino Ratio**: Like Sharpe but only penalizes downside volatility
-  - **Max Drawdown**: Largest peak-to-trough decline (closer to 0% is better)
-  - **Win Rate**: Percentage of days with positive returns
-
-### Generated Charts (in `output/`)
-
-| Chart | What It Shows |
-|-------|--------------|
-| `asset_class_weights.png` | **Primary allocation chart** - stacked area showing equity vs bond vs ETF weights over time |
-| `ticker_weights.png` | Individual asset weights over time |
-| `portfolio_value.png` | Portfolio dollar value vs SPY buy-and-hold benchmark |
-| `drawdown.png` | Peak-to-trough drawdowns over time |
-| `daily_pnl.png` | Daily profit/loss in dollars |
-| `regime_analysis.png` | Multi-panel combining portfolio value with allocation shifts |
-
-### Key Questions the Charts Answer
-
-- **"When should I hold more bonds vs stocks?"** - Look at `asset_class_weights.png`. Periods where bond allocation increases indicate the model detected higher equity risk.
-- **"Did the ML portfolio beat the market?"** - Compare the blue line (ML portfolio) to the dashed gray line (SPY) in `portfolio_value.png`.
-- **"How bad can losses get?"** - The `drawdown.png` chart shows the worst-case decline from any peak.
-- **"Do allocation shifts correlate with performance?"** - The `regime_analysis.png` multi-panel lets you visually link allocation changes to portfolio value changes.
-
-## Extending the Project
-
-### Adding new assets
-
-1. Add the ticker to `model_tickers` in `main.py`
-2. Add the asset group mapping in `src/features.py` (`ASSET_GROUP_MAP`)
-
-### Changing allocation method
-
-The `build_allocation_timeline()` function in `src/strategy.py` accepts a `method` parameter and `vol_scaling` flag. You can modify `compute_portfolio_weights()` to implement alternative allocation strategies (e.g., mean-variance, risk parity).
-
-### Adjusting simulation parameters
-
-In `main.py`, modify the `run_simulation()` call:
-- `initial_capital`: Starting dollar amount
-- `transaction_cost_bps`: Trading cost in basis points (10 = 0.1%)
-- `start_date` / `end_date`: Simulation date range
+- The test window (2024–2025) is a single bull market. Don't treat the
+  reported Sharpe and returns as forecasts.
+- The "best model by validation Sharpe" framing is the right way to do
+  model selection, but the validation period is also short and may not
+  generalize.
+- The AI tilt's contribution is small and roughly neutral on a risk-
+  adjusted basis. Treat it as a transparent experiment, not edge.
+- A 3-name equity universe is too narrow to be a real product. Expanding
+  it (`asset_config.py` already lists `GOOGL`, `META`, `JPM`, `JNJ`, etc.)
+  is mechanically easy but would require retraining the models.
