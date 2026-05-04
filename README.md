@@ -78,6 +78,12 @@ For more detail on each half:
 - [`risk-return-analysis/README.md`](risk-return-analysis/README.md) — pipeline internals, model selection, profile definitions
 - [`app/README.md`](app/README.md) — app structure, screens, data flow
 
+If you want to **understand the finance and ML concepts** behind the
+project (no prior background assumed), read:
+- [`LEARNING.md`](LEARNING.md) — finance fundamentals, the strategy
+  explained from first principles, lighter ML coverage, curated
+  resources for further study
+
 ## Disclaimer
 
 **This is a simulation, not investment advice.** Past performance does not
