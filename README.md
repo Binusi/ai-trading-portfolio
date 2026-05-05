@@ -27,8 +27,14 @@ stock weights inside the equity sleeve by up to ±5% based on a machine-
 learning return signal.
 
 The app simulates **what would have happened** to your chosen capital under
-each profile from 2024-01-02 through 2025-12-31, scaled linearly from a
-$1,000 base simulation.
+each profile from 2024-01-02 through 2025-12-31. Two contribution modes:
+
+- **Lump sum** — invest your starting capital once on day one. Results are
+  scaled linearly from a canonical $1,000 base simulation.
+- **Regular contributions** — invest a starting amount, then deposit a
+  recurring fixed amount every N months on the 1st, 15th, or end of the
+  month. The app reconstructs the dollar trajectory by replaying the
+  strategy's daily returns over your contribution schedule.
 
 ### Backtest results (2024-01-02 → 2025-12-31)
 

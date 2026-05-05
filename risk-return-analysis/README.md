@@ -37,11 +37,44 @@ and model types). At the end you get:
 - PNG plots in `output/` (asset-class weights, portfolio value, drawdown, etc.)
 - JSON files in `../app/assets/data/` that the Expo app consumes
 
-If you only want to verify the strategy module without retraining everything:
+### CLI flags
+
+`main.py` accepts arguments to override the default lump-sum simulation:
+
+| Flag                       | Default | Notes |
+|----------------------------|---------|-------|
+| `--initial-capital`        | `1000`  | Starting cash in dollars. |
+| `--deposit-amount`         | `0`     | Recurring deposit; `0` disables deposits and runs lump-sum. |
+| `--deposit-every-months`   | `1`     | One of `1, 2, 3, 6, 12`. |
+| `--deposit-day`            | `1`     | One of `1`, `15`, or `eom` (last trading day of month). |
+
+Day-of-month conventions: `1` and `15` snap **forward** to the next trading
+day (handles weekends and US market holidays). `eom` snaps **backward** to
+the last trading day of the same month — matches how payroll/brokerages
+settle month-end transfers.
+
+```bash
+# $1,000 initial + $100 monthly on the 1st
+python main.py --initial-capital 1000 --deposit-amount 100 \
+  --deposit-every-months 1 --deposit-day 1
+```
+
+When `--deposit-amount > 0`, the printed metrics use **time-weighted return
+(TWR)** — the cum-product of cashflow-adjusted daily returns — and report
+`total_contributions` alongside `final_value`. TWR is the standard "strategy
+performance" metric and is comparable across deposit schedules. JSON export
+is **skipped** in deposit mode so the canonical $1,000 lump-sum baseline the
+app reconstructs from is preserved; re-run without `--deposit-amount` to
+refresh the JSONs.
+
+### Smoke tests
+
+If you only want to verify modules without retraining everything:
 
 ```bash
 python test_profile_strategy.py    # tilt math, quarterly dates, rationale text
 python test_export_app_data.py     # JSON shape and content (uses synthetic data)
+python test_deposits.py            # deposit-date snapping, cash injection, TWR
 ```
 
 ## Risk profiles
@@ -96,7 +129,7 @@ Train / val / test splits:
 The pipeline picks the best (target, model) combination by **validation**
 Sharpe — using the test set's Sharpe to pick would be selection bias.
 
-### Stage 2 — Profile-based simulation (`src/profile_strategy.py`, `src/simulation.py`)
+### Stage 2 — Profile-based simulation (`src/profile_strategy.py`, `src/simulation.py`, `src/deposits.py`)
 
 For each `(profile, use_tilt)` pair:
 1. Build a quarterly rebalance timeline (`get_quarterly_rebalance_dates`)
@@ -104,8 +137,13 @@ For each `(profile, use_tilt)` pair:
    the equity sleeve tilts (`compute_equity_tilts`); produce target ticker
    weights and a rationale string
 3. Run the dollar-based simulator (`run_simulation`) with explicit
-   quarterly rebalance dates, fractional shares, 10 bps transaction cost
-4. Compute metrics (Sharpe, Sortino, max drawdown, win rate, etc.)
+   quarterly rebalance dates, fractional shares, 10 bps transaction cost.
+   When a `DepositSchedule` is passed, cash is injected on the snapped
+   trading day matching the schedule (1st / 15th / EOM, every N months) and
+   redeployed at the next quarterly rebalance.
+4. Compute metrics. Daily returns are cashflow-adjusted (deposits excluded
+   from the numerator) so Sharpe / Sortino / max-drawdown / TWR all reflect
+   pure strategy performance even when deposits are active.
 
 ### Stage 3 — JSON export (`src/export_app_data.py`)
 
@@ -116,8 +154,16 @@ Writes 7 files to `../app/assets/data/`:
 | `summary.json`             | profile metadata, 6-row comparison, SPY benchmark series, ML model info, default view, disclaimer |
 | `<profile>_<tilt>.json`    | full daily series + per-rebalance event with rationale, tilts, trades, allocation snapshot |
 
-All values use a $1,000 starting-capital base. The app scales linearly to
-the user's selected capital at display time.
+All values use a **$1,000 starting-capital, no-deposits canonical baseline**.
+The app uses this baseline two ways:
+- **Lump-sum mode**: scales values linearly by `(userCapital / 1000)`.
+- **Deposit mode**: replays the exported cashflow-adjusted `daily_return`
+  series against the user's chosen initial capital and deposit schedule to
+  reconstruct the dollar trajectory client-side.
+
+Because the app reconstructs from the canonical baseline, deposit-mode runs
+of `main.py` skip the export — re-run without `--deposit-amount` to refresh
+the JSONs.
 
 ## Project structure
 
@@ -126,17 +172,19 @@ risk-return-analysis/
   main.py                     entry point — runs the full pipeline
   test_profile_strategy.py    smoke test for tilt math + rationale
   test_export_app_data.py     smoke test for JSON export shape
+  test_deposits.py            smoke test for deposit scheduling + cashflow-adjusted returns
 
   src/
     asset_config.py           ticker universe definitions
     backtest.py               return-based backtesting
     data_fetch.py             yfinance wrapper
+    deposits.py               DepositSchedule + trading-day snapping
     export_app_data.py        JSON output for the app
     features.py               54+ technical / statistical features
     model.py                  ML training, model registry, eval
     profile_strategy.py       quarterly allocation + AI tilt + rationale
     profiles.py               Conservative / Balanced / Aggressive
-    simulation.py             dollar-based trade simulator
+    simulation.py             dollar-based trade simulator (deposit-aware)
     strategy.py               legacy score-weighted allocation (unused by main flow)
     utils.py                  shared helpers
     visualization.py          matplotlib plots → output/
