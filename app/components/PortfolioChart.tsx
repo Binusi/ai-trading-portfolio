@@ -3,14 +3,15 @@ import { Dimensions, StyleSheet, View } from 'react-native';
 import { LineChart } from 'react-native-gifted-charts';
 
 import { ThemedText } from '@/components/themed-text';
-import type { BenchmarkDailyPoint, DailyPoint } from '@/data/types';
+import type { BenchmarkDailyPoint } from '@/data/types';
 import { scaleFromBase } from '@/lib/format';
+import type { ReconstructedDay } from '@/lib/reconstructPortfolio';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
 type Props = {
-  daily: DailyPoint[];
+  reconstructed: ReconstructedDay[];     // user-scaled, deposit-aware series
   benchmark?: BenchmarkDailyPoint[];
-  capital: number;
+  capital: number;                       // for SPY benchmark linear scaling only
   primaryColor: string;
   benchmarkColor?: string;
 };
@@ -18,7 +19,7 @@ type Props = {
 const SAMPLE_EVERY_N = 5; // weekly
 
 export function PortfolioChart({
-  daily,
+  reconstructed,
   benchmark,
   capital,
   primaryColor,
@@ -27,9 +28,11 @@ export function PortfolioChart({
   const text = useThemeColor({}, 'text');
 
   const { primaryData, benchmarkData, yMin, yMax } = useMemo(() => {
-    const sampled = daily.filter((_, i) => i % SAMPLE_EVERY_N === 0 || i === daily.length - 1);
+    const sampled = reconstructed.filter(
+      (_, i) => i % SAMPLE_EVERY_N === 0 || i === reconstructed.length - 1
+    );
     const primary = sampled.map((d) => ({
-      value: scaleFromBase(d.value, capital),
+      value: d.value,
       label: '',
     }));
 
@@ -54,7 +57,7 @@ export function PortfolioChart({
       yMin: Math.floor(min - padding),
       yMax: Math.ceil(max + padding),
     };
-  }, [daily, benchmark, capital]);
+  }, [reconstructed, benchmark, capital]);
 
   const screenWidth = Dimensions.get('window').width;
   const chartWidth = screenWidth - 40;

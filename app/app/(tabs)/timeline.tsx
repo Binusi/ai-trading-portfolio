@@ -8,6 +8,7 @@ import { RebalanceEventRow } from '@/components/RebalanceEventRow';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { loadProfileDetail, summary } from '@/data/loadData';
+import { findReconstructed, reconstructPortfolio } from '@/lib/reconstructPortfolio';
 import { useAppState } from '@/state/AppContext';
 
 export default function TimelineScreen() {
@@ -16,6 +17,10 @@ export default function TimelineScreen() {
   const detail = useMemo(
     () => loadProfileDetail(choice.profileKey, choice.tiltEnabled),
     [choice.profileKey, choice.tiltEnabled]
+  );
+  const reconstructed = useMemo(
+    () => reconstructPortfolio(detail.daily, choice.capital, choice.deposit),
+    [detail.daily, choice.capital, choice.deposit]
   );
 
   if (!ready) return <ThemedView style={styles.flex} />;
@@ -34,15 +39,18 @@ export default function TimelineScreen() {
             <DisclaimerBanner text={summary.disclaimer} compact />
           </View>
 
-          {detail.rebalance_events.map((event) => (
-            <RebalanceEventRow
-              key={event.date}
-              event={event}
-              capital={choice.capital}
-              profileKey={choice.profileKey}
-              onPress={() => router.push(`/event/${event.date}`)}
-            />
-          ))}
+          {detail.rebalance_events.map((event) => {
+            const point = findReconstructed(reconstructed, event.date);
+            return (
+              <RebalanceEventRow
+                key={event.date}
+                event={event}
+                postValueScaled={point ? point.value : null}
+                profileKey={choice.profileKey}
+                onPress={() => router.push(`/event/${event.date}`)}
+              />
+            );
+          })}
         </ScrollView>
       </SafeAreaView>
     </ThemedView>

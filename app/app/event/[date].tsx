@@ -11,8 +11,12 @@ import {
   formatCurrency,
   formatDateLong,
   formatQuarter,
-  scaleFromBase,
 } from '@/lib/format';
+import {
+  findReconstructed,
+  reconstructPortfolio,
+  scaleAtDate,
+} from '@/lib/reconstructPortfolio';
 import { ProfileColors, SemanticColors } from '@/lib/palette';
 import { useAppState } from '@/state/AppContext';
 
@@ -23,6 +27,10 @@ export default function EventDetailScreen() {
   const detail = useMemo(
     () => loadProfileDetail(choice.profileKey, choice.tiltEnabled),
     [choice.profileKey, choice.tiltEnabled]
+  );
+  const reconstructed = useMemo(
+    () => reconstructPortfolio(detail.daily, choice.capital, choice.deposit),
+    [detail.daily, choice.capital, choice.deposit]
   );
   const event = date ? findEvent(detail, date) : undefined;
   const profileColor = ProfileColors[choice.profileKey].primary;
@@ -42,8 +50,17 @@ export default function EventDetailScreen() {
     );
   }
 
-  const pre = event.portfolio_value_before_rebalance;
-  const post = event.portfolio_value_after_rebalance;
+  // Look up the reconstructed (deposit-aware, user-scaled) values for this
+  // event. Pre = previous trading day; Post = event day.
+  const postPoint = findReconstructed(reconstructed, event.date);
+  const eventIdx = postPoint
+    ? reconstructed.findIndex((d) => d.date === event.date)
+    : -1;
+  const prePoint = eventIdx > 0 ? reconstructed[eventIdx - 1] : null;
+  const preScaled =
+    event.portfolio_value_before_rebalance != null && prePoint ? prePoint.value : null;
+  const postScaled =
+    event.portfolio_value_after_rebalance != null && postPoint ? postPoint.value : null;
 
   return (
     <ThemedView style={styles.root}>
@@ -61,11 +78,11 @@ export default function EventDetailScreen() {
           <ThemedText style={styles.body}>{event.rationale_text}</ThemedText>
         </Section>
 
-        {pre != null || post != null ? (
+        {preScaled != null || postScaled != null ? (
           <Section title="Portfolio value">
             <View style={styles.beforeAfter}>
-              <ValueBlock label="Before" value={pre} capital={choice.capital} />
-              <ValueBlock label="After (post-fees)" value={post} capital={choice.capital} />
+              <ValueBlock label="Before" value={preScaled} />
+              <ValueBlock label="After (post-fees)" value={postScaled} />
             </View>
             <ThemedText style={styles.helper}>
               Difference is the transaction cost paid for this rebalance: $
@@ -96,20 +113,25 @@ export default function EventDetailScreen() {
 
         <Section title={`Trades placed (${event.trade_count})`}>
           <ThemedText style={styles.helper}>
-            Dollar amounts are scaled to your selected capital ({formatCurrency(choice.capital)}).
-            The simulation uses fractional shares so any starting amount works.
+            Dollar amounts are scaled to your portfolio value at this rebalance
+            ({postScaled != null ? formatCurrency(postScaled) : '—'}). The simulation uses
+            fractional shares so any starting amount works.
           </ThemedText>
-          {event.trades.map((trade, idx) => (
-            <TradeRow
-              key={`${trade.ticker}-${idx}`}
-              trade={{
-                ...trade,
-                shares: scaleFromBase(trade.shares, choice.capital),
-                dollar_value: scaleFromBase(trade.dollar_value, choice.capital),
-                transaction_cost: scaleFromBase(trade.transaction_cost, choice.capital),
-              }}
-            />
-          ))}
+          {event.trades.map((trade, idx) => {
+            const tradeScale = (v: number) =>
+              scaleAtDate(v, reconstructed, event.date, choice.capital);
+            return (
+              <TradeRow
+                key={`${trade.ticker}-${idx}`}
+                trade={{
+                  ...trade,
+                  shares: tradeScale(trade.shares),
+                  dollar_value: tradeScale(trade.dollar_value),
+                  transaction_cost: tradeScale(trade.transaction_cost),
+                }}
+              />
+            );
+          })}
         </Section>
       </ScrollView>
     </ThemedView>
@@ -128,17 +150,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function ValueBlock({
   label,
   value,
-  capital,
 }: {
   label: string;
   value: number | null;
-  capital: number;
 }) {
   return (
     <View style={styles.valueBlock}>
       <ThemedText style={styles.valueLabel}>{label}</ThemedText>
       <ThemedText style={styles.valueAmount}>
-        {value != null ? formatCurrency(scaleFromBase(value, capital)) : '—'}
+        {value != null ? formatCurrency(value) : '—'}
       </ThemedText>
     </View>
   );

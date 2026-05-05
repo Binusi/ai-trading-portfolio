@@ -4,6 +4,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src.deposits import DepositSchedule, get_deposit_dates
 from src.features import ASSET_GROUP_MAP
 from src.utils import get_trading_days, get_rebalance_dates, get_prices_for_date
 
@@ -170,11 +171,17 @@ def run_simulation(
     rebalance_every_n_days: int = 5,
     transaction_cost_bps: float = 10.0,
     rebalance_dates: Optional[list[pd.Timestamp]] = None,
+    deposit_schedule: Optional[DepositSchedule] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run dollar-based trade simulation.
 
     If `rebalance_dates` is provided, it overrides `rebalance_every_n_days` —
     useful for irregular cadences like first-trading-day-of-quarter.
+
+    If `deposit_schedule` is provided, the configured cash amount is added to
+    the portfolio on each scheduled deposit date. Daily returns are
+    cashflow-adjusted so the deposit itself does not register as a positive
+    return.
 
     Returns (daily_log_df, trade_log_df).
     """
@@ -183,6 +190,14 @@ def run_simulation(
         rebalance_dates_set = {pd.Timestamp(d) for d in rebalance_dates}
     else:
         rebalance_dates_set = set(get_rebalance_dates(trading_days, rebalance_every_n_days))
+
+    if deposit_schedule is not None and deposit_schedule.amount > 0:
+        deposit_lookup = {
+            pd.Timestamp(d): deposit_schedule.amount
+            for d in get_deposit_dates(trading_days, deposit_schedule)
+        }
+    else:
+        deposit_lookup = {}
 
     # Build allocation lookup: date -> {ticker: weight}
     alloc = allocation_timeline.copy()
@@ -195,6 +210,7 @@ def run_simulation(
     daily_rows = []
     trade_rows = []
     prev_value = initial_capital
+    contributions_to_date = initial_capital
 
     for day in trading_days:
         prices = get_prices_for_date(price_data, day, tickers)
@@ -202,6 +218,15 @@ def run_simulation(
             continue
 
         state = update_prices(state, prices, day)
+
+        today_deposit = deposit_lookup.get(day, 0.0)
+        if today_deposit:
+            state = PortfolioState(
+                date=day,
+                cash=state.cash + today_deposit,
+                positions=state.positions,
+            )
+            contributions_to_date += today_deposit
 
         if day in rebalance_dates_set:
             # Find the closest allocation date <= today
@@ -222,9 +247,14 @@ def run_simulation(
                 for trade in trades:
                     trade_rows.append({"Date": day, **trade})
 
-        # Record daily snapshot
+        # Record daily snapshot. Daily return is cashflow-adjusted: the
+        # deposit injected today is excluded from the numerator so it does not
+        # show up as a positive return.
         total = state.total_value
-        daily_return = (total / prev_value - 1) if prev_value > 0 else 0.0
+        if prev_value > 0:
+            daily_return = (total - today_deposit) / prev_value - 1
+        else:
+            daily_return = 0.0
 
         row = {
             "Date": day,
@@ -232,6 +262,8 @@ def run_simulation(
             "positions_value": state.positions_value,
             "total_value": total,
             "daily_return": daily_return,
+            "deposit": today_deposit,
+            "contributions_to_date": contributions_to_date,
         }
 
         # Record per-ticker weights
@@ -273,8 +305,15 @@ def compute_simulation_metrics(
     n_days = len(daily_log)
     years = n_days / TRADING_DAYS_PER_YEAR
 
-    total_return = final_value / initial_capital - 1
+    # Time-weighted return: cum-product of cashflow-adjusted daily returns.
+    # Equivalent to final/initial - 1 in lump-sum mode, but unaffected by
+    # mid-simulation deposits.
+    total_return = float((1 + returns).prod() - 1)
     annualized_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0.0
+
+    deposits_sum = float(daily_log["deposit"].sum()) if "deposit" in daily_log.columns else 0.0
+    total_contributions = initial_capital + deposits_sum
+    money_in_minus_out = float(final_value - total_contributions)
 
     mean_ret = returns.mean()
     std_ret = returns.std()
@@ -293,6 +332,8 @@ def compute_simulation_metrics(
 
     metrics = {
         "initial_capital": initial_capital,
+        "total_contributions": total_contributions,
+        "money_in_minus_out": money_in_minus_out,
         "final_portfolio_value": final_value,
         "total_return": total_return,
         "annualized_return": annualized_return,

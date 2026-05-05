@@ -1,3 +1,5 @@
+import argparse
+
 import pandas as pd
 
 from src.backtest import build_top_k_backtest
@@ -27,10 +29,39 @@ from src.profiles import (
     get_profile,
     get_required_tickers,
 )
+from src.deposits import DepositSchedule
 from src.export_app_data import export_app_data
 from src.simulation import run_simulation, compute_simulation_metrics
 from src.utils import format_metrics_table, get_trading_days
 from src.visualization import generate_all_plots
+
+
+def _parse_cli_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the AI-driven trade simulation across risk profiles.",
+    )
+    parser.add_argument(
+        "--initial-capital", type=float, default=1000.0,
+        help="Starting cash balance in dollars (default: 1000).",
+    )
+    parser.add_argument(
+        "--deposit-amount", type=float, default=0.0,
+        help="Recurring deposit in dollars; 0 disables deposits (default: 0).",
+    )
+    parser.add_argument(
+        "--deposit-every-months", type=int, default=1,
+        choices=[1, 2, 3, 6, 12],
+        help="Deposit frequency in months (default: 1).",
+    )
+    parser.add_argument(
+        "--deposit-day", type=str, default="1",
+        choices=["1", "15", "eom"],
+        help="Day of month to deposit on: 1, 15, or 'eom' (default: 1).",
+    )
+    return parser.parse_args()
+
+
+CLI_ARGS = _parse_cli_args()
 
 
 # ---------------------------- CHOOSE ASSETS
@@ -295,12 +326,32 @@ best_test_predictions = all_test_predictions[(best_target, best_group, best_mode
 
 SIM_START = "2024-01-01"
 SIM_END = "2025-12-31"
-INITIAL_CAPITAL = 1000.0
+INITIAL_CAPITAL = float(CLI_ARGS.initial_capital)
 TILT_CAP = 0.05
+
+if CLI_ARGS.deposit_amount > 0:
+    deposit_day_arg = (
+        "EOM" if CLI_ARGS.deposit_day.lower() == "eom" else int(CLI_ARGS.deposit_day)
+    )
+    DEPOSIT_SCHEDULE = DepositSchedule(
+        amount=float(CLI_ARGS.deposit_amount),
+        period_months=int(CLI_ARGS.deposit_every_months),
+        day_of_month=deposit_day_arg,
+    )
+else:
+    DEPOSIT_SCHEDULE = None
 
 trading_days = get_trading_days(SIM_START, SIM_END, data)
 quarterly_dates = get_quarterly_rebalance_dates(trading_days)
 print(f"\nSimulation window: {SIM_START} to {SIM_END}")
+print(f"Initial capital: ${INITIAL_CAPITAL:,.2f}")
+if DEPOSIT_SCHEDULE is not None:
+    every = DEPOSIT_SCHEDULE.period_months
+    every_label = "month" if every == 1 else f"{every} months"
+    print(
+        f"Deposits: ${DEPOSIT_SCHEDULE.amount:,.2f} every {every_label} "
+        f"on day {DEPOSIT_SCHEDULE.day_of_month}"
+    )
 print(f"Quarterly rebalance dates: {len(quarterly_dates)}")
 
 profile_results: dict[tuple[str, bool], dict] = {}
@@ -329,6 +380,7 @@ for profile_key in ["conservative", "balanced", "aggressive"]:
             initial_capital=INITIAL_CAPITAL,
             transaction_cost_bps=10.0,
             rebalance_dates=quarterly_dates,
+            deposit_schedule=DEPOSIT_SCHEDULE,
         )
 
         metrics = compute_simulation_metrics(daily_log, initial_capital=INITIAL_CAPITAL)
@@ -346,7 +398,13 @@ for profile_key in ["conservative", "balanced", "aggressive"]:
             "metrics": metrics,
         }
 
+        contrib_part = (
+            f"Contributions: ${metrics['total_contributions']:.2f}  "
+            if DEPOSIT_SCHEDULE is not None
+            else ""
+        )
         print(f"  Final value: ${metrics['final_portfolio_value']:.2f}  "
+              f"{contrib_part}"
               f"Total return: {metrics['total_return']:.2%}  "
               f"Sharpe: {metrics.get('sharpe_ratio', float('nan')):.2f}  "
               f"Max DD: {metrics['max_drawdown']:.2%}  "
@@ -357,7 +415,15 @@ for profile_key in ["conservative", "balanced", "aggressive"]:
 print("\n" + "=" * 120)
 print("PROFILE COMPARISON SUMMARY")
 print("=" * 120)
-print(f"\nAll figures based on ${INITIAL_CAPITAL:.0f} initial capital, "
+deposit_part = ""
+if DEPOSIT_SCHEDULE is not None:
+    every = DEPOSIT_SCHEDULE.period_months
+    every_label = "month" if every == 1 else f"{every} months"
+    deposit_part = (
+        f", plus ${DEPOSIT_SCHEDULE.amount:.0f} every {every_label} "
+        f"on day {DEPOSIT_SCHEDULE.day_of_month}"
+    )
+print(f"\nAll figures based on ${INITIAL_CAPITAL:.0f} initial capital{deposit_part}, "
       f"{SIM_START} → {SIM_END}, quarterly rebalancing.\n")
 
 header = f"{'Profile':<14s} {'Tilt':<6s} {'Final $':>10s} {'Total':>9s} {'Annual':>9s} {'Sharpe':>7s} {'Max DD':>8s} {'Trades':>7s}"
@@ -444,15 +510,26 @@ ml_model_info = {
 }
 
 app_data_dir = "../app/assets/data"
-written_files = export_app_data(
-    profile_results=profile_results,
-    price_data=data,
-    ml_model_info=ml_model_info,
-    simulation_config=simulation_config,
-    output_dir=app_data_dir,
-    default_profile_key="balanced",
-    default_use_tilt=False,
-)
-print(f"\nWrote {len(written_files)} JSON files to {app_data_dir}:")
-for p in written_files:
-    print(f"  - {p.name}  ({p.stat().st_size / 1024:.1f} KB)")
+
+if DEPOSIT_SCHEDULE is not None:
+    # The app expects exports to be the canonical $1,000 lump-sum baseline so
+    # it can reconstruct any user-chosen initial + deposit schedule on the
+    # client. Writing deposit-mode totals here would break that contract.
+    print(
+        "\nSkipping JSON export: --deposit-amount is set, but the app expects "
+        "the canonical $1,000 lump-sum baseline. Re-run main.py without "
+        "--deposit-amount to refresh the exports."
+    )
+else:
+    written_files = export_app_data(
+        profile_results=profile_results,
+        price_data=data,
+        ml_model_info=ml_model_info,
+        simulation_config=simulation_config,
+        output_dir=app_data_dir,
+        default_profile_key="balanced",
+        default_use_tilt=False,
+    )
+    print(f"\nWrote {len(written_files)} JSON files to {app_data_dir}:")
+    for p in written_files:
+        print(f"  - {p.name}  ({p.stat().st_size / 1024:.1f} KB)")

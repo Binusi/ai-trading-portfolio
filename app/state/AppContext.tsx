@@ -1,5 +1,6 @@
-// Holds the user's onboarding choices: profile, capital, AI tilt opt-in.
-// Persisted to AsyncStorage so reopening the app skips onboarding.
+// Holds the user's onboarding choices: profile, capital, AI tilt opt-in,
+// optional periodic-deposit schedule. Persisted to AsyncStorage so reopening
+// the app skips onboarding.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -7,10 +8,20 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { summary } from '@/data/loadData';
 import type { ProfileKey } from '@/data/types';
 
+export type DepositPeriodMonths = 1 | 2 | 3 | 6 | 12;
+export type DepositDayOfMonth = 1 | 15 | 'EOM';
+
+export type DepositSchedule = {
+  amount: number;                 // 0 = deposits disabled
+  periodMonths: DepositPeriodMonths;
+  dayOfMonth: DepositDayOfMonth;
+};
+
 type UserChoice = {
   profileKey: ProfileKey;
   capital: number;
   tiltEnabled: boolean;
+  deposit: DepositSchedule;
 };
 
 type AppState = {
@@ -21,16 +32,37 @@ type AppState = {
   resetOnboarding: () => Promise<void>;
 };
 
-const STORAGE_KEY = 'app_user_choice_v1';
+const STORAGE_KEY = 'app_user_choice_v2';
 const ONBOARDED_KEY = 'app_onboarded_v1';
+
+const defaultDeposit: DepositSchedule = {
+  amount: 0,
+  periodMonths: 1,
+  dayOfMonth: 1,
+};
 
 const defaultChoice: UserChoice = {
   profileKey: summary.default_view.profile_key,
   capital: 1000,
   tiltEnabled: summary.default_view.tilt_enabled,
+  deposit: defaultDeposit,
 };
 
 const AppContext = createContext<AppState | null>(null);
+
+function normalizeDeposit(raw: unknown): DepositSchedule {
+  if (!raw || typeof raw !== 'object') return defaultDeposit;
+  const r = raw as Partial<DepositSchedule>;
+  const amount = typeof r.amount === 'number' && r.amount >= 0 ? r.amount : 0;
+  const periodMonths: DepositPeriodMonths =
+    r.periodMonths === 1 || r.periodMonths === 2 || r.periodMonths === 3 ||
+    r.periodMonths === 6 || r.periodMonths === 12
+      ? r.periodMonths
+      : 1;
+  const dayOfMonth: DepositDayOfMonth =
+    r.dayOfMonth === 15 || r.dayOfMonth === 'EOM' ? r.dayOfMonth : 1;
+  return { amount, periodMonths, dayOfMonth };
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -50,6 +82,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             profileKey: parsed.profileKey ?? defaultChoice.profileKey,
             capital: typeof parsed.capital === 'number' ? parsed.capital : defaultChoice.capital,
             tiltEnabled: parsed.tiltEnabled ?? defaultChoice.tiltEnabled,
+            deposit: normalizeDeposit(parsed.deposit),
           });
         }
         if (storedOnboarded === 'true') setOnboarded(true);
