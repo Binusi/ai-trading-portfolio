@@ -3,18 +3,18 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import type { ProfileKey, RebalanceEvent } from '@/data/types';
 import { ProfileColors, SemanticColors } from '@/lib/palette';
-import { formatCurrency, formatDate, formatQuarter, scaleFromBase } from '@/lib/format';
+import { formatCurrency, formatDate, formatQuarter } from '@/lib/format';
 
 type Props = {
   event: RebalanceEvent;
-  capital: number;
+  /** Pre-scaled portfolio value for this event date (deposit-aware). */
+  postValueScaled: number | null;
   profileKey: ProfileKey;
   onPress: () => void;
 };
 
-export function RebalanceEventRow({ event, capital, profileKey, onPress }: Props) {
+export function RebalanceEventRow({ event, postValueScaled, profileKey, onPress }: Props) {
   const profileColor = ProfileColors[profileKey].primary;
-  const post = event.portfolio_value_after_rebalance;
 
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}>
@@ -26,7 +26,7 @@ export function RebalanceEventRow({ event, capital, profileKey, onPress }: Props
         </View>
         <View style={styles.metricsRow}>
           <ThemedText style={styles.metric}>
-            {formatCurrency(scaleFromBase(post ?? 0, capital), { compact: true })} after
+            {formatCurrency(postValueScaled ?? 0, { compact: true })} after
           </ThemedText>
           <ThemedText style={styles.metric}>
             {event.trade_count} trade{event.trade_count === 1 ? '' : 's'}

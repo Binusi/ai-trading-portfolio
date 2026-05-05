@@ -11,6 +11,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { loadProfileDetail, summary } from '@/data/loadData';
 import { formatCurrency, formatPercent, scaleFromBase } from '@/lib/format';
+import { reconstructPortfolio, twrTotalReturn } from '@/lib/reconstructPortfolio';
 import { ProfileColors, SemanticColors } from '@/lib/palette';
 import { useAppState } from '@/state/AppContext';
 
@@ -22,14 +23,25 @@ export default function DashboardScreen() {
     [choice.profileKey, choice.tiltEnabled]
   );
 
+  const reconstructed = useMemo(
+    () => reconstructPortfolio(detail.daily, choice.capital, choice.deposit),
+    [detail.daily, choice.capital, choice.deposit]
+  );
+  // Headline return uses the strategy's TWR — comparable across deposit
+  // schedules and identical to the lump-sum total_return when no deposits.
+  const twrReturn = useMemo(() => twrTotalReturn(detail.daily), [detail.daily]);
+
   if (!ready) return <ThemedView style={styles.flex} />;
   if (!onboarded) return <Redirect href="/onboarding" />;
   const profileColor = ProfileColors[choice.profileKey].primary;
 
-  const finalValueScaled = scaleFromBase(detail.metrics.final_portfolio_value, choice.capital);
-  const returnDollars = finalValueScaled - choice.capital;
+  const lastReconstructed = reconstructed[reconstructed.length - 1];
+  const finalValueScaled = lastReconstructed?.value ?? choice.capital;
+  const totalContributions = lastReconstructed?.contributions ?? choice.capital;
+  const returnDollars = finalValueScaled - totalContributions;
   const returnColor =
     returnDollars >= 0 ? SemanticColors.positive : SemanticColors.negative;
+  const depositActive = choice.deposit.amount > 0;
 
   const benchmarkFinal = scaleFromBase(
     summary.benchmark.metrics.final_portfolio_value,
@@ -51,8 +63,19 @@ export default function DashboardScreen() {
               </ThemedText>
               <ThemedText style={[styles.delta, { color: returnColor }]}>
                 {returnDollars >= 0 ? '+' : ''}
-                {formatCurrency(returnDollars)} ({formatPercent(detail.metrics.total_return)})
+                {formatCurrency(returnDollars)} ({formatPercent(twrReturn)})
               </ThemedText>
+              {depositActive ? (
+                <ThemedText style={styles.contribLine}>
+                  {formatCurrency(totalContributions)} contributed (
+                  {formatCurrency(choice.capital)} initial +{' '}
+                  {formatCurrency(choice.deposit.amount)} every{' '}
+                  {choice.deposit.periodMonths === 1
+                    ? 'month'
+                    : `${choice.deposit.periodMonths} months`}
+                  )
+                </ThemedText>
+              ) : null}
             </View>
             <View style={[styles.tiltBadge, { borderColor: profileColor }]}>
               <ThemedText style={[styles.tiltLabel, { color: profileColor }]}>
@@ -62,8 +85,21 @@ export default function DashboardScreen() {
           </View>
 
           <ThemedText style={styles.helper}>
-            Simulated outcome of investing {formatCurrency(choice.capital)} on{' '}
-            {summary.simulation.start_date} and rebalancing quarterly through{' '}
+            Simulated outcome of investing {formatCurrency(choice.capital)}
+            {depositActive
+              ? ` plus ${formatCurrency(choice.deposit.amount)} every ${
+                  choice.deposit.periodMonths === 1
+                    ? 'month'
+                    : `${choice.deposit.periodMonths} months`
+                } on the ${
+                  choice.deposit.dayOfMonth === 'EOM'
+                    ? 'last trading day of the month'
+                    : `${choice.deposit.dayOfMonth}${
+                        choice.deposit.dayOfMonth === 1 ? 'st' : 'th'
+                      }`
+                }`
+              : ''}
+            {' '}from {summary.simulation.start_date} and rebalancing quarterly through{' '}
             {summary.simulation.end_date}.
           </ThemedText>
 
@@ -72,7 +108,7 @@ export default function DashboardScreen() {
           <View style={styles.section}>
             <ThemedText type="subtitle">Portfolio value over time</ThemedText>
             <PortfolioChart
-              daily={detail.daily}
+              reconstructed={reconstructed}
               benchmark={summary.benchmark.daily}
               capital={choice.capital}
               primaryColor={profileColor}
@@ -95,6 +131,13 @@ export default function DashboardScreen() {
           <View style={styles.section}>
             <ThemedText type="subtitle">Key metrics</ThemedText>
             <MetricGrid>
+              {depositActive ? (
+                <MetricCard
+                  label="Total contributed"
+                  value={formatCurrency(totalContributions, { compact: true })}
+                  caption={`Final value ${formatCurrency(finalValueScaled, { compact: true })}`}
+                />
+              ) : null}
               <MetricCard
                 label="Annualized return"
                 value={formatPercent(detail.metrics.annualized_return)}
@@ -161,6 +204,7 @@ const styles = StyleSheet.create({
   eyebrow: { fontSize: 12, opacity: 0.7, textTransform: 'uppercase', letterSpacing: 0.5 },
   value: { fontSize: 32, fontWeight: '700' },
   delta: { fontSize: 14, fontWeight: '600' },
+  contribLine: { fontSize: 12, opacity: 0.7, marginTop: 2 },
   tiltBadge: {
     borderWidth: 1,
     borderRadius: 999,

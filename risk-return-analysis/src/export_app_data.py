@@ -5,8 +5,14 @@ finishes the ML training and the six profile simulations, this module writes
 a small set of JSON files into `app/assets/data/`. The app bundles those
 files at build time and renders them.
 
-All dollar values are stored against a $1,000 starting capital. The app
-scales them linearly by `(user_capital / 1000)` for display.
+All dollar values are stored against a $1,000 starting capital with NO
+periodic deposits — i.e. the canonical lump-sum baseline. The app scales
+the lump-sum case linearly by `(user_capital / 1000)`. For deposit mode,
+the app reconstructs the user's dollar trajectory client-side by replaying
+the exported `daily_return` series against the user's initial capital and
+deposit schedule. This works because `daily_return` is cashflow-adjusted
+in the simulation engine; in lump-sum exports it equals the strategy's
+per-day return assuming 100% deployment.
 
 File layout produced:
 
@@ -106,10 +112,15 @@ def _build_daily_series(daily_log: pd.DataFrame) -> list[dict]:
             for cls in asset_classes
             if f"{cls}_weight" in daily_log.columns
         }
+        total_value = _safe_number(r["total_value"])
         rows.append(
             {
                 "date": _iso_date(r["Date"]),
-                "value": _safe_number(r["total_value"]),
+                "value": total_value,
+                # Intent-revealing alias used by the app's deposit-mode
+                # reconstruction code. Always equals `value` because the
+                # canonical export runs at $1,000 with no deposits.
+                "value_per_1000": total_value,
                 "daily_return": _safe_number(r.get("daily_return", 0.0) or 0.0),
                 "asset_class_weights": _clean(asset_class_weights),
             }
