@@ -18,6 +18,25 @@ Scan the QR code with the Expo Go app on your phone, or press `i` / `a` for
 the iOS / Android simulator. Designed and tested in Expo Go — no custom
 native code.
 
+### If `expo start` fails with `TypeError: fetch failed`
+
+Expo CLI runs a preflight that fetches a native-module compatibility
+table from Expo's API (`getNativeModuleVersionsAsync`). If your laptop
+can't reach that API (captive portal, VPN, flaky DNS, registry hiccup),
+the CLI errors out before Metro even starts. The dev server itself does
+not need network — the app reads bundled JSON from `assets/data/`. Start
+in offline mode to skip the preflight:
+
+```bash
+npx expo start --offline
+# or
+npm run start:offline
+```
+
+Append `--clear` to either command to flush the Metro bundler cache
+(e.g. `npm run start:offline -- --clear`). Once Metro is up, Expo Go on
+your phone connects over the LAN as usual.
+
 ## What the app shows
 
 1. **Onboarding** — pick a risk profile (Conservative / Balanced /
