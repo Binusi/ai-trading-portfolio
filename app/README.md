@@ -40,11 +40,14 @@ your phone connects over the LAN as usual.
 ## What the app shows
 
 1. **Onboarding** — pick a risk profile (Conservative / Balanced /
-   Aggressive), enter a starting capital, and choose whether to enable the
-   AI tilt. Default is Balanced + tilt off.
+   Aggressive), enter a starting capital, optionally configure recurring
+   contributions (amount + period of 1/2/3/6/12 months + day-of-month
+   1/15/EOM), and choose whether to enable the AI tilt. Default is
+   Balanced + no recurring contribution + tilt off.
 2. **Dashboard** tab — portfolio value chart vs SPY buy-and-hold,
    headline metrics (annualized return, max drawdown, Sharpe, win rate),
-   current allocation bar.
+   current allocation bar. When recurring contributions are on, the
+   dashboard also shows total contributed alongside final value.
 3. **Decisions** tab — list of all eight quarterly rebalance events. Tap
    any row to drill into that day.
 4. **Date detail** — for the selected rebalance, shows the human-readable
@@ -86,11 +89,17 @@ data/
   loadData.ts              static import of summary + 6 detail files
 
 state/
-  AppContext.tsx           profile / capital / tilt + AsyncStorage persistence
+  AppContext.tsx           profile / capital / tilt / deposit schedule +
+                           AsyncStorage persistence (storage key v2)
 
 lib/
   format.ts                currency, percent, date helpers; `scaleFromBase`
-                           for $1,000 → user-capital scaling
+                           for $1,000 → user-capital scaling (lump-sum mode)
+  deposits.ts              TS port of get_deposit_dates: 1st/15th snap forward,
+                           EOM snaps backward to the last trading day
+  reconstructPortfolio.ts  walks the canonical daily series + deposit schedule
+                           to produce a deposit-aware dollar trajectory; also
+                           exports `twrTotalReturn` and `scaleAtDate`
   palette.ts               profile colors + per-asset-class colors
 
 assets/
@@ -110,10 +119,23 @@ app/assets/data/{summary.json, balanced_no_tilt.json, ...}
 loadProfileDetail(profileKey, useTilt)  →  ProfileDetail object used by screens
 ```
 
-All dollar values in the JSON are stored against a $1,000 starting-capital
-base. The app multiplies by `(userCapital / 1000)` everywhere it displays a
-dollar — see `scaleFromBase` in `lib/format.ts`. Returns and percentages are
-already relative so they need no scaling.
+All dollar values in the JSON are stored against a **$1,000 starting-capital,
+no-deposits canonical baseline**. The app derives display dollars from it two
+ways:
+
+- **Lump-sum mode** (no recurring contributions): linearly scales each value
+  by `(userCapital / 1000)` — see `scaleFromBase` in `lib/format.ts`.
+- **Deposit mode**: `lib/reconstructPortfolio.ts` walks the daily series,
+  applying the cashflow-adjusted `daily_return` then injecting the
+  configured deposit on each scheduled trading day. Per-trade dollar values
+  are scaled to the user's portfolio value at the trade date via
+  `scaleAtDate`. The headline return is time-weighted (`twrTotalReturn`),
+  identical to the lump-sum total return when no deposits are active.
+
+Honest approximation: the canonical baseline assumes 100% deployment, so
+deposit-mode reconstructed returns slightly overstate the cash-drag between
+quarterly rebalances. For exact numbers, run the Python pipeline with the
+`--deposit-amount` flag and read the printed metrics.
 
 ## Regenerating data
 
