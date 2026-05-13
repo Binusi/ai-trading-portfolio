@@ -90,6 +90,24 @@ project (no prior background assumed), read:
   explained from first principles, lighter ML coverage, curated
   resources for further study
 
+## Going live
+
+This repo is being grown into a real, AWS-hosted mobile app where users sign
+up, declare initial capital and recurring contributions, and receive daily
+buy/sell/hold advice with rationale. **Advisory only — no broker, no real
+money.** Planning lives in [`docs/`](docs/):
+
+- [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) — vision, architecture, scope
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — AWS components and contracts
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — phased milestones with checkboxes
+- [`docs/HANDOVER.md`](docs/HANDOVER.md) — session-state log (read first each session)
+- [`docs/decisions/`](docs/decisions/) — Architecture Decision Records
+
+The new top-level directories — [`backend/`](backend/) (Lambdas),
+[`infra/`](infra/) (AWS CDK), [`scripts/`](scripts/), and
+[`.github/workflows/`](.github/workflows/) — are scaffolded but empty; they
+get populated phase by phase per the roadmap.
+
 ## Disclaimer
 
 **This is a simulation, not investment advice.** Past performance does not
