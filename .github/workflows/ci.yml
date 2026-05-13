@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ml-pipeline:
+    name: ml-pipeline (lint + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: risk-return-analysis
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ../requirements.txt
+          pip install ruff mypy pytest
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Tests (pytest)
+        run: pytest -q
+
+  backend:
+    name: backend (lint + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install ruff mypy pytest
+
+      - name: Lint (ruff)
+        run: |
+          if [ -d lambdas ] || [ -d shared ]; then ruff check .; else echo "no backend code yet, skipping"; fi
+
+      - name: Tests (pytest)
+        run: |
+          if [ -d tests ]; then pytest -q; else echo "no backend tests yet, skipping"; fi
+
+  mobile:
+    name: mobile (typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+  infra:
+    name: infra (cdk synth)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Skip if not yet bootstrapped
+        id: check
+        run: |
+          if [ -f package.json ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "infra not yet bootstrapped, skipping"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install
+        if: steps.check.outputs.ready == 'true'
+        run: npm ci || npm install
+
+      - name: Synth
+        if: steps.check.outputs.ready == 'true'
+        run: npx cdk synth --context env=dev
